@@ -6,6 +6,7 @@ cron: */2 * * * * /usr/local/bin/singbox-guard/guard.py
 铁律：UDP 优先。TCP/兜底线路永不自动提升，仅在 UDP 全线不可用时由
 fb-main 静态 fallback 链接管（本守护不干预）。
 """
+import os
 import sys
 import time
 from pathlib import Path
@@ -49,7 +50,7 @@ def collect(state, round_no):
         metrics.append({
             "line": line,
             "mbps": r["mbps"],
-            "delay_ms": 1000.0 if r["alive"] else 5000.0,
+            "delay_ms": (r.get("delay_ms") or (1000.0 if r["alive"] else 5000.0)),
             "success": 1.0 if r["alive"] else 0.0,
         })
     return metrics
@@ -57,7 +58,6 @@ def collect(state, round_no):
 
 def acquire_lock():
     """防止上一轮未结束就启动下一轮（全量轮 ~100s，接近 cron 间隔）"""
-    import os
     os.makedirs("/var/lib/singbox-guard", exist_ok=True)
     try:
         fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -82,12 +82,25 @@ def main():
     try:
         _main()
     finally:
-        import os
         os.close(fd)
         try:
             os.unlink(LOCK)
         except OSError:
             pass
+
+
+def collect_pools(state, pool):
+    """采集指定池的指标（C 用于 TCP/兜底池动态择优）"""
+    metrics = []
+    for line in pool:
+        r = probe_line(line)
+        metrics.append({
+            "line": line,
+            "mbps": r["mbps"],
+            "delay_ms": (r.get("delay_ms") or (1000.0 if r["alive"] else 5000.0)),
+            "success": 1.0 if r["alive"] else 0.0,
+        })
+    return metrics
 
 
 def _main():
@@ -106,8 +119,23 @@ def _main():
     target, reason = policy.decide(state, ranked)
     log("[决策] " + reason)
 
+    # ---- C) UDP 全线不可用 → TCP/兜底池动态择优 ----
+    udp_alive = [m for m in metrics if m["success"] > 0 and m["mbps"] > 0]
+    if os.environ.get("GUARD_TEST_UDPDEAD") == "1":
+        udp_alive = []                      # 演练：模拟 UDP 全线不可用
+    if not udp_alive:
+        log("[兜底] UDP 候选池全部不可用，启动 TCP/兜底池探测")
+        fb_metrics = collect_pools(state, list(policy.TCP_POOL) + list(policy.TAIL_POOL))
+        fb_ranked = score.rank(fb_metrics)
+        for m in fb_ranked:
+            log("  [兜底] %-12s score=%-7s %7.2f Mbps  success=%s"
+                % (m["line"], m["score"], m["mbps"], m["success"]))
+        fb_target, fb_reason = policy.decide_fallback_pool(fb_ranked)
+        log("[兜底] " + fb_reason)
+        if fb_target:
+            target = fb_target
+
     # ---- M3 告警（边沿触发）----
-    import os
     alive_lines = [m for m in metrics if m["success"] > 0 and m["mbps"] > 0]
     if os.environ.get("GUARD_TEST_ALLDEAD") == "1":
         alive_lines = []                      # 演练：模拟全线故障
