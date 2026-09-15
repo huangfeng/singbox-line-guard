@@ -18,7 +18,8 @@ import score
 from probe import probe_line
 
 LOG = "/var/log/singbox-guard.log"
-FULL_SWEEP_EVERY = 5      # 每 5 轮做一次全量扫描，其余轮只测候选
+LOCK = "/var/lib/singbox-guard/guard.lock"
+FULL_SWEEP_EVERY = 3      # 每 3 轮（30 分钟）一次全量      # 每 5 轮做一次全量扫描，其余轮只测候选
 
 
 def log(msg):
@@ -54,7 +55,42 @@ def collect(state, round_no):
     return metrics
 
 
+def acquire_lock():
+    """防止上一轮未结束就启动下一轮（全量轮 ~100s，接近 cron 间隔）"""
+    import os
+    os.makedirs("/var/lib/singbox-guard", exist_ok=True)
+    try:
+        fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        return fd
+    except FileExistsError:
+        # 锁存在：检查是否陈旧（>15 分钟）
+        try:
+            if time.time() - os.path.getmtime(LOCK) > 900:
+                os.unlink(LOCK)
+                return acquire_lock()
+        except OSError:
+            pass
+        return None
+
+
 def main():
+    fd = acquire_lock()
+    if fd is None:
+        log("上一轮仍在运行，本次跳过（防并发）")
+        return
+    try:
+        _main()
+    finally:
+        import os
+        os.close(fd)
+        try:
+            os.unlink(LOCK)
+        except OSError:
+            pass
+
+
+def _main():
     state = actuator.load_state()
     round_no = state.get("round", 0) + 1
     state["round"] = round_no
