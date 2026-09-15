@@ -15,6 +15,26 @@ HYSTERESIS_ROUNDS = 2                    # 连续 2 轮
 MIN_SWITCH_GAP    = 300                  # 切换间隔 ≥ 300s
 BLACKLIST_TTL     = 1800                 # 回退后拉黑 30 分钟
 
+def decide_fallback_pool(ranked_all, now=None):
+    """C) UDP 全线不可用时的动态兜底择优。
+
+    候选顺序：TCP 池（按同一评分模型择优）→ TAIL 池（cc-awg / warp-direct）。
+    返回 (line, reason) 或 (None, reason)。
+    """
+    def best_of(pool, label):
+        cand = [m for m in ranked_all if m["line"] in pool and m["mbps"] > 0 and m["success"] > 0]
+        if not cand:
+            return None, None
+        b = max(cand, key=lambda m: m["score"])
+        return b, "%s 动态择优 → %s（score=%s, %s Mbps）" % (label, b["line"], b["score"], b["mbps"])
+
+    for pool, label in ((TCP_POOL, "TCP 池"), (TAIL_POOL, "兜底池")):
+        b, reason = best_of(pool, label)
+        if b:
+            return b["line"], "UDP 全线不可用，" + reason
+    return None, "UDP/TCP/兜底池全部不可用 → 判定本地网络故障，保持现状"
+
+
 def decide(state, ranked, now=None):
     """返回 (target_line|None, reason)"""
     now = now or time.time()
