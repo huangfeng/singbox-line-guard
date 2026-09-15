@@ -53,6 +53,22 @@ def download(url: str) -> tuple[float, int]:
         return 0.0, 0
 
 
+def get_delay(line: str, timeout_ms: int = 8000):
+    """A) 真实延迟：经该线路探测握手耗时（ms）。
+
+    注意：这是 TCP 语义的握手延迟，对 UDP 系（hy2/tuic）会偏高，
+    因此只作为次要指标（权重 0.20），主指标仍是真实吞吐。
+    """
+    try:
+        url = ("/proxies/%s/delay?url=https://www.gstatic.com/generate_204"
+               "&timeout=%d" % (line, timeout_ms))
+        r = api("GET", url, timeout=timeout_ms / 1000 + 5)
+        d = r.get("delay")
+        return float(d) if isinstance(d, (int, float)) and d > 0 else None
+    except Exception:
+        return None
+
+
 def probe_line(line: str) -> dict:
     """单线路：先判活，再取 SAMPLES 次吞吐中位数。"""
     select(line)
@@ -72,8 +88,9 @@ def probe_line(line: str) -> dict:
         time.sleep(1)
 
     mbps = statistics.median(speeds) if speeds else 0.0
+    delay = get_delay(line)                      # A) 真实延迟
     return {"line": line, "alive": alive == "204", "mbps": round(mbps, 2),
-            "samples": [round(s, 2) for s in speeds]}
+            "delay_ms": delay, "samples": [round(s, 2) for s in speeds]}
 
 
 def main() -> None:
