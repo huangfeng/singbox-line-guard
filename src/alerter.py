@@ -63,3 +63,53 @@ def check(state, alive, total, lines_detail):
         return item, "已发出恢复告警"
 
     return None, "线路正常，无告警"
+
+
+# ==================== B) 慢速劣化告警 ====================
+# 场景：现任从 50 Mbps 掉到 8 Mbps，但没有更优候选 → 守护只静默保持。
+# VPS 被限速 / 晚高峰劣化属于实际会发生的情况，需要主动告警。
+
+DEGRADE_MBPS = 10.0        # 最优线路低于此值视为劣化
+DEGRADE_ROUNDS = 3         # 连续 3 轮才告警（避免瞬时抖动）
+
+
+def check_degradation(state, best_mbps):
+    """best_mbps: 本轮最优线路的吞吐（0 表示无可用线路，交由 all_dead 处理）"""
+    now = time.time()
+    streak = state.get("degrade_streak", 0)
+
+    if 0 < best_mbps < DEGRADE_MBPS:
+        streak += 1
+    elif best_mbps <= 0:
+        streak = state.get("degrade_streak", 0)      # 全挂由 all_dead 负责，不叠加
+    else:
+        streak = 0
+    state["degrade_streak"] = streak
+
+    active = state.get("degrade_alert_active", False)
+
+    if streak >= DEGRADE_ROUNDS and not active:
+        if now - state.get("last_alert", {}).get("degrade", 0) < COOLDOWN:
+            return None, "劣化告警处于冷却期"
+        item = _write("degraded",
+                      "[警告] sing-box 线路普遍降速",
+                      "连续 %d 轮最优线路吞吐仅 %.2f Mbps（阈值 %.0f Mbps）。\n"
+                      "出网未中断，但体验已明显下降。\n"
+                      "常见原因：VPS 被限速 / 晚高峰拥塞 / 运营商 QoS。\n"
+                      "建议：检查 148/107 出口带宽，或临时切到 warp-direct。"
+                      % (streak, best_mbps, DEGRADE_MBPS), state)
+        state["degrade_alert_active"] = True
+        state.setdefault("last_alert", {})["degrade"] = now
+        return item, "已发出降速告警（%.2f Mbps × %d 轮）" % (best_mbps, streak)
+
+    if streak == 0 and active:
+        item = _write("degraded_recovered",
+                      "[恢复] sing-box 线路速度已恢复",
+                      "最优线路吞吐回到 %.2f Mbps（阈值 %.0f Mbps），劣化告警解除。"
+                      % (best_mbps, DEGRADE_MBPS), state)
+        state["degrade_alert_active"] = False
+        return item, "已发出降速恢复告警"
+
+    if streak == 0:
+        return None, "速度正常，无告警"
+    return None, "降速 %d/%d 轮，继续观察" % (streak, DEGRADE_ROUNDS)
