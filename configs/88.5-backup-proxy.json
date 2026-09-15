@@ -1,0 +1,205 @@
+{
+    "log": {
+        "level": "warn",
+        "timestamp": true
+    },
+    "dns": {
+        "servers": [
+            {
+                "tag": "local",
+                "type": "udp",
+                "server": "192.168.88.3",
+                "server_port": 53
+            },
+            {
+                "tag": "dns-warp",
+                "type": "https",
+                "server": "1.1.1.1",
+                "detour": "warp-direct",
+                "tls": {
+                    "enabled": true,
+                    "server_name": "cloudflare-dns.com"
+                }
+            }
+        ],
+        "strategy": "ipv4_only"
+    },
+    "endpoints": [
+        {
+            "type": "warp",
+            "tag": "warp-direct",
+            "system": false,
+            "name": "warp1",
+            "listen_port": 0,
+            "udp_timeout": "5m0s",
+            "persistent_keepalive_interval": 25,
+            "amnezia": {
+                "jc": 4,
+                "jmin": 40,
+                "jmax": 70
+            },
+            "profile": {
+                "detour": "cc-bond",
+                "recreate": true
+            },
+            "address": "162.159.192.1",
+            "port": 2408,
+            "domain_resolver": "dns-warp"
+        }
+    ],
+    "inbounds": [
+        {
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": "0.0.0.0",
+            "listen_port": 7890
+        }
+    ],
+    "outbounds": [
+        {
+            "type": "selector",
+            "tag": "proxy",
+            "outbounds": [
+                "fb-main",
+                "cc-bond",
+                "cc-hy2",
+                "rn-hy2",
+                "rn-tuic",
+                "warp-direct"
+            ],
+            "default": "fb-main"
+        },
+        {
+            "type": "direct",
+            "tag": "direct"
+        },
+        {
+            "type": "hysteria2",
+            "tag": "cc-hy2",
+            "server": "148.135.86.162",
+            "server_port": 10001,
+            "password": "327b1113-049e-4256-8d72-8815643dbb65",
+            "up_mbps": 200,
+            "down_mbps": 500,
+            "tls": {
+                "enabled": true,
+                "insecure": true,
+                "alpn": [
+                    "h3"
+                ],
+                "server_name": "addons.mozilla.org"
+            }
+        },
+        {
+            "type": "bond",
+            "tag": "cc-bond",
+            "outbounds": [
+                {
+                    "outbound": {
+                        "type": "hysteria2",
+                        "server": "148.135.86.162",
+                        "server_port": 10081,
+                        "password": "327b1113-049e-4256-8d72-8815643dbb65",
+                        "up_mbps": 200,
+                        "down_mbps": 500,
+                        "tls": {
+                            "enabled": true,
+                            "insecure": true,
+                            "alpn": [
+                                "h3"
+                            ],
+                            "server_name": "addons.mozilla.org"
+                        }
+                    },
+                    "download_ratio": 50,
+                    "upload_ratio": 50
+                },
+                {
+                    "outbound": {
+                        "type": "tuic",
+                        "server": "148.135.86.162",
+                        "server_port": 10082,
+                        "uuid": "327b1113-049e-4256-8d72-8815643dbb65",
+                        "password": "327b1113-049e-4256-8d72-8815643dbb65",
+                        "congestion_control": "bbr",
+                        "zero_rtt_handshake": true,
+                        "tls": {
+                            "enabled": true,
+                            "insecure": true,
+                            "alpn": [
+                                "h3"
+                            ],
+                            "server_name": "addons.mozilla.org"
+                        }
+                    },
+                    "download_ratio": 50,
+                    "upload_ratio": 50
+                }
+            ]
+        },
+        {
+            "type": "hysteria2",
+            "tag": "rn-hy2",
+            "server": "107.174.27.207",
+            "server_port": 10001,
+            "password": "5b697a6b-8e1c-44f7-be8d-0d7a064980c2",
+            "up_mbps": 200,
+            "down_mbps": 500,
+            "tls": {
+                "enabled": true,
+                "insecure": true,
+                "alpn": [
+                    "h3"
+                ],
+                "server_name": "addons.mozilla.org"
+            }
+        },
+        {
+            "type": "tuic",
+            "tag": "rn-tuic",
+            "server": "107.174.27.207",
+            "server_port": 10002,
+            "uuid": "5b697a6b-8e1c-44f7-be8d-0d7a064980c2",
+            "password": "5b697a6b-8e1c-44f7-be8d-0d7a064980c2",
+            "congestion_control": "bbr",
+            "zero_rtt_handshake": true,
+            "udp_relay_mode": "native",
+            "tls": {
+                "enabled": true,
+                "insecure": true,
+                "alpn": [
+                    "h3"
+                ],
+                "server_name": "addons.mozilla.org"
+            }
+        },
+        {
+            "type": "fallback",
+            "tag": "fb-main",
+            "outbounds": [
+                "cc-bond",
+                "cc-hy2",
+                "rn-hy2",
+                "rn-tuic",
+                "warp-direct"
+            ]
+        }
+    ],
+    "route": {
+        "rules": [
+            {
+                "ip_is_private": true,
+                "outbound": "direct"
+            }
+        ],
+        "final": "fb-main",
+        "default_domain_resolver": "local",
+        "auto_detect_interface": true
+    },
+    "experimental": {
+        "cache_file": {
+            "enabled": true,
+            "path": "/var/lib/sing-box/cache.db"
+        }
+    }
+}
