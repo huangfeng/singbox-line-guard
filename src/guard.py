@@ -16,7 +16,7 @@ import actuator
 import alerter
 import policy
 import score
-from probe import probe_line
+from probe import get_delay, probe_line
 
 LOG = "/var/log/singbox-guard.log"
 LOCK = "/var/lib/singbox-guard/guard.lock"
@@ -124,6 +124,17 @@ def _main():
     if os.environ.get("GUARD_TEST_UDPDEAD") == "1":
         udp_alive = []                      # 演练：模拟 UDP 全线不可用
     if not udp_alive:
+        # ---- 窄版 E) 探测自检：区分「线真挂了」与「探测目标故障」----
+        # 探测全 0 但现任线路的 API 延迟正常 → 极可能是 speed.cloudflare.com 被墙/改版，
+        # 而不是线路故障。此时若照常告警 + 兜底切换，会把「探测故障」误报成「网络故障」。
+        incumbent_now = state.get("incumbent")
+        if (os.environ.get("GUARD_TEST_UDPDEAD") != "2"        # 2 = 跳过自检，专门演练兜底
+                and incumbent_now and get_delay(incumbent_now, 6000) is not None):
+            log("[自检] 探测全 0 但现任 %s 的 API 延迟正常 → 疑似探测目标故障，"
+                "本轮作废（不告警、不切换）" % incumbent_now)
+            actuator.save_state(state)
+            log("===== 结束 =====")
+            return
         log("[兜底] UDP 候选池全部不可用，启动 TCP/兜底池探测")
         fb_metrics = collect_pools(state, list(policy.TCP_POOL) + list(policy.TAIL_POOL))
         fb_ranked = score.rank(fb_metrics)
@@ -144,6 +155,13 @@ def _main():
     log("[告警] " + alert_reason)
     if alert_item:
         log("[告警] 已写入 %s：%s" % (alerter.PENDING, alert_item["title"]))
+
+    # ---- B) 慢速劣化告警 ----
+    best_mbps = max([m["mbps"] for m in metrics], default=0.0)
+    deg_item, deg_reason = alerter.check_degradation(state, best_mbps)
+    log("[劣化] " + deg_reason)
+    if deg_item:
+        log("[劣化] 已写入 %s：%s" % (alerter.PENDING, deg_item["title"]))
 
     selectors = actuator.list_selectors()
     if target:
