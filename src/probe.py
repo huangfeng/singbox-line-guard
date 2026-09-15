@@ -19,8 +19,8 @@ import urllib.request
 API = "http://192.168.88.4:9090"
 PROXY = "http://192.168.88.4:7890"
 PROBE_URL = "https://speed.cloudflare.com/__down?bytes={bytes}"
-CHUNK = 5_000_000          # 5MB 分片
-SAMPLES = 3
+CHUNK = 5_000_000          # 5MB 分片（分片过小会因 TCP/QUIC 慢启动低估吞吐且各协议失真不同）
+SAMPLES = 1
 TIMEOUT = 25
 
 LINES = ["cc-bond", "cc-hy2", "cc-tuic", "cc-reality", "cc-xhttp", "cc-awg",
