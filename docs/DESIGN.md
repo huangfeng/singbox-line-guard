@@ -46,15 +46,21 @@ AUTO_POOL = UDP_POOL                # 自动切换候选池
 score = 0.60*norm(throughput) + 0.20*(1-norm(latency)) + 0.20*success_rate
 ```
 - `norm()` 为本轮 min-max 归一化（同轮内可比）
-- 吞吐取 3 次采样**中位数**，抗瞬时抖动
-- `success_rate` 来自窗口内探测成功率与 `/connections` 失败计数
+- **延迟为实测值**：`/proxies/<tag>/delay`（timeout 8s）；失败则回退常量 1000/5000 ms
+  - ⚠️ 该延迟是 TCP 语义握手耗时，对 UDP 系（hy2/tuic）系统性偏高 → 故权重仅 0.20，主指标为吞吐
+- 吞吐取 **1 次 5MB 分片**（低采样换大分片：分片过小会因 TCP/QUIC 慢启动低估吞吐，且各协议失真程度不同，会导致排名错误）
+- `success_rate` 来自判活结果与 `/connections` 失败计数
 
 ## 6. 决策状态机
 ```
-采集 → 过滤不可用 → 对 AUTO_POOL 评分 → 取最高分 challenger
+采集(5MB×1) → 过滤不可用 → 对 AUTO_POOL(UDP) 评分 → 取最高分 challenger
   IF challenger == incumbent: 保持
   IF challenger > incumbent*1.2 连续 2 轮: 切换并记录
   ELSE: 保持（迟滞）
+
+IF UDP 池全部不可用:                          # C) FR13
+  探测 TCP_POOL + TAIL_POOL → 同一评分模型择优 → 切换
+  IF 也全部不可用: 判定本地网络故障 → 保持现状 + 告警
 ```
 | 保护 | 规则 |
 |---|---|
@@ -73,13 +79,25 @@ score = 0.60*norm(throughput) + 0.20*(1-norm(latency)) + 0.20*success_rate
 /var/log/singbox-guard.log            # 决策日志（含理由）
 ```
 
-## 9. 部署
+## 9. 探测成本约束（NFR7）
+
+| 轮次类型 | 线路数 | 流量 |
+|---|---|---|
+| 全量轮（每 3 轮 / 30 分钟） | 6 | 30 MB |
+| 精简轮（其余） | 3 | 15 MB |
+
+按 cron 每 10 分钟估算：**约 1.5-2.5 GB/天**。
+
+> 反面教训：曾为省流量把分片缩到 1.5MB，结果 `cc-hy2` 从 31 → 7.2 Mbps 的假性下跌
+> （TCP/QUIC 慢启动受影响程度不同），**排名直接失真**。正确做法是「大分片 + 低采样」。
+
+## 10. 部署
 ```bash
 */2 * * * * /usr/local/bin/singbox-guard/guard.py >> /var/log/singbox-guard.log 2>&1
 ```
 停用：注释 cron 即可（NFR5）。
 
-## 10. 里程碑
+## 11. 里程碑
 | 里程碑 | 内容 | 交付物 |
 |---|---|---|
 | **M1** | 探测基座 | `sel-probe` + 路由规则 + `probe.py` + **12 线路吞吐排名** |
