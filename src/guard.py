@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import actuator
+import alerter
 import policy
 import score
 from probe import probe_line
@@ -68,6 +69,17 @@ def main():
 
     target, reason = policy.decide(state, ranked)
     log("[决策] " + reason)
+
+    # ---- M3 告警（边沿触发）----
+    import os
+    alive_lines = [m for m in metrics if m["success"] > 0 and m["mbps"] > 0]
+    if os.environ.get("GUARD_TEST_ALLDEAD") == "1":
+        alive_lines = []                      # 演练：模拟全线故障
+    alert_item, alert_reason = alerter.check(
+        state, len(alive_lines), len(policy.AUTO_POOL), metrics)
+    log("[告警] " + alert_reason)
+    if alert_item:
+        log("[告警] 已写入 %s：%s" % (alerter.PENDING, alert_item["title"]))
 
     selectors = actuator.list_selectors()
     if target:
