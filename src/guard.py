@@ -105,6 +105,25 @@ def collect_pools(state, pool):
 
 def _main():
     state = actuator.load_state()
+
+    # ---- NFR11) 网关 API 可达性检查（后续所有操作都依赖它，放在最前）----
+    api_ok = True
+    if os.environ.get("GUARD_TEST_APIDOWN") == "1":
+        api_ok = False                                    # 演练：模拟 88.4 网关挂掉
+    else:
+        try:
+            actuator.api("GET", "/proxies", timeout=5)
+        except Exception:
+            api_ok = False
+    api_item, api_reason = alerter.check_api(state, api_ok)
+    log("[网关] " + api_reason)
+    if not api_ok:
+        if api_item:
+            log("[网关] 已写入 %s：%s" % (alerter.PENDING, api_item["title"]))
+        actuator.save_state(state)
+        log("===== 结束（网关不可达，跳过本轮择优）=====")
+        return
+
     round_no = state.get("round", 0) + 1
     state["round"] = round_no
     log("===== 第 %d 轮 =====" % round_no)
