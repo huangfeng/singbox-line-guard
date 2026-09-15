@@ -113,3 +113,46 @@ def check_degradation(state, best_mbps):
     if streak == 0:
         return None, "速度正常，无告警"
     return None, "降速 %d/%d 轮，继续观察" % (streak, DEGRADE_ROUNDS)
+
+
+# ============ NFR11) 网关 API 不可达告警（提示改用 88.5 兜底） ============
+# 场景：88.4 的 sing-box 完全没响应（进程死 / 系统挂 / 网络不通）。
+# 守护此时无法做任何择优，**而这恰恰是该提示用户切到 88.5:7890 兜底代理的时刻**。
+
+API_COOLDOWN = 900          # 15 分钟，网关故障通常需要人工处理，不必频繁提醒
+
+
+def check_api(state, reachable):
+    """reachable: 88.4 Clash API 是否可达"""
+    now = time.time()
+    active = state.get("api_alert_active", False)
+
+    if not reachable:
+        if active:
+            return None, "网关 API 仍不可达，已告警，抑制重复"
+        if now - state.get("last_alert", {}).get("api_down", 0) < API_COOLDOWN:
+            return None, "网关 API 不可达但处于冷却期"
+        item = _write("api_down",
+                      "[严重] 88.4 网关 API 不可达 —— 建议切换到 88.5 兜底代理",
+                      "守护无法连接 88.4 的 Clash API (192.168.88.4:9090)。\n"
+                      "说明 sing-box 进程已死或网关本身故障，所有线路择优停止。\n\n"
+                      "【立即处置】浏览器/终端改用 88.5 内网兜底代理：\n"
+                      "  HTTP  : 192.168.88.5:7890\n"
+                      "  SOCKS5: 192.168.88.5:7890\n"
+                      "  验证  : curl -x http://192.168.88.5:7890 https://www.gstatic.com/generate_204\n\n"
+                      "【恢复】登录 88.4 检查：\n"
+                      "  ps | grep sing-box   → 进程是否存活\n"
+                      "  /etc/init.d/singbox restart", state)
+        state["api_alert_active"] = True
+        state.setdefault("last_alert", {})["api_down"] = now
+        return item, "已发出网关 API 不可达告警"
+
+    if active:
+        item = _write("api_recovered",
+                      "[恢复] 88.4 网关 API 已恢复",
+                      "守护已重新连上 88.4 的 Clash API，恢复正常择优。\n"
+                      "可切回 88.4（透明代理）继续使用，88.5 兜底代理可按需停用。", state)
+        state["api_alert_active"] = False
+        return item, "已发出网关恢复告警"
+
+    return None, "网关 API 正常"
